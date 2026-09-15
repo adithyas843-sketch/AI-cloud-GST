@@ -1,396 +1,83 @@
 from __future__ import annotations
-
-import io
-
+from io import BytesIO
 import pandas as pd
+import plotly.express as px
 import streamlit as st
+from reconciliation import read_upload, reconcile, summary, gstr3b_control
+from validators import validation_report
+from ai_insights import generate_insights
 
-from reconciliation import (
-    CANONICAL_FIELDS,
-    generate_management_summary,
-    infer_column_mapping,
-    read_excel_file,
-    reconcile_data,
-    standardize_dataframe,
-)
+st.set_page_config(page_title="AI GST Compliance Copilot", page_icon="🧾", layout="wide")
+st.markdown("<style>.stMetric{background:#fff;border:1px solid #e6e9ef;border-radius:12px;padding:12px}.block-container{padding-top:1.5rem}</style>",unsafe_allow_html=True)
+st.title("AI GST Compliance Copilot")
+st.caption("Invoice-level GST reconciliation, exception intelligence, and audit-ready reporting.")
 
-
-st.set_page_config(
-    page_title="GST Compliance Copilot",
-    page_icon="GST",
-    layout="wide",
-)
-
-st.markdown(
-    """
-    <style>
-    .stApp {
-        background: #f5f7f8;
-    }
-
-    .hero {
-        background: linear-gradient(120deg, #063b35, #0d6b5d);
-        color: white;
-        padding: 2rem 2.2rem;
-        border-radius: 18px;
-        margin-bottom: 1.5rem;
-    }
-
-    .hero h1 {
-        font-size: 2.4rem;
-        margin: 0;
-    }
-
-    .hero p {
-        color: #d8f3ed;
-        margin: 0.6rem 0 0;
-        font-size: 1.05rem;
-    }
-
-    div[data-testid="stMetric"] {
-        background: white;
-        border: 1px solid #dce6e3;
-        border-radius: 14px;
-        padding: 1rem;
-    }
-
-    .section-label {
-        color: #0d6b5d;
-        font-weight: 700;
-        letter-spacing: .08em;
-        text-transform: uppercase;
-        font-size: .75rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-    <div class="hero">
-        <h1>GST Compliance Copilot</h1>
-        <p>Invoice-level reconciliation between GSTR-1 and Tally Sales Register.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+def excel_bytes(sheets: dict[str,pd.DataFrame]):
+    out=BytesIO()
+    with pd.ExcelWriter(out,engine="xlsxwriter") as writer:
+        for name, df in sheets.items(): df.to_excel(writer,sheet_name=name[:31],index=False)
+    return out.getvalue()
 
 with st.sidebar:
-    st.header("Control Panel")
-    tolerance = st.number_input(
-        "Amount tolerance (Rs)",
-        min_value=0.0,
-        max_value=1000.0,
-        value=1.0,
-        step=0.5,
-        help="Differences within this amount are treated as matched.",
-    )
+    st.header("Upload files")
+    uploads={}
+    for label,key in [("GSTR-1 Export","GSTR-1"),("Tally Sales Register","Tally"),("Zoho Books Sales Register","Zoho"),("GSTR-3B Summary","GSTR-3B")]:
+        uploads[key]=st.file_uploader(label,type=["xlsx","xls","csv"],key=key)
+    run=st.button("Run Reconciliation",type="primary",use_container_width=True)
+    st.divider(); st.subheader("About")
+    st.caption("Files stay in memory for the duration of this session. Review all recommendations with supporting documents before filing.")
 
-    st.caption(
-        "Upload both Excel files to enable reconciliation. "
-        "Column names are auto-mapped using common GSTR-1 and Tally aliases."
-    )
-
-st.markdown('<div class="section-label">Source Files</div>', unsafe_allow_html=True)
-upload_col_1, upload_col_2 = st.columns(2)
-
-with upload_col_1:
-    gstr1_file = st.file_uploader(
-        "Upload GSTR-1 Excel file",
-        type=["xlsx", "xls"],
-        key="gstr1",
-    )
-
-with upload_col_2:
-    tally_file = st.file_uploader(
-        "Upload Tally Sales Register Excel file",
-        type=["xlsx", "xls"],
-        key="tally",
-    )
-
-if not gstr1_file or not tally_file:
-    st.info(
-        "Upload one GSTR-1 file and one Tally Sales Register file to begin."
-    )
-    st.stop()
-
-try:
-    raw_gstr1 = read_excel_file(gstr1_file)
-    raw_tally = read_excel_file(tally_file)
-except Exception as error:
-    st.error(f"Could not read the Excel files: {error}")
-    st.stop()
-
-if raw_gstr1.empty or raw_tally.empty:
-    st.error("At least one uploaded workbook contains no usable rows.")
-    st.stop()
-
-gstr1_mapping = infer_column_mapping(list(raw_gstr1.columns))
-tally_mapping = infer_column_mapping(list(raw_tally.columns))
-
-st.markdown('<div class="section-label">Auto-Mapped Columns</div>', unsafe_allow_html=True)
-
-mapping_rows = []
-for field in CANONICAL_FIELDS:
-    mapping_rows.append(
-        {
-            "Canonical field": field.replace("_", " ").title(),
-            "GSTR-1 column": gstr1_mapping.get(field) or "Not found",
-            "Tally column": tally_mapping.get(field) or "Not found",
-        }
-    )
-
-st.dataframe(
-    pd.DataFrame(mapping_rows),
-    use_container_width=True,
-    hide_index=True,
-)
-
-missing_gstr1 = [
-    field
-    for field in ["invoice_number", "taxable_value"]
-    if not gstr1_mapping.get(field)
-]
-missing_tally = [
-    field
-    for field in ["invoice_number", "taxable_value"]
-    if not tally_mapping.get(field)
-]
-
-if missing_gstr1 or missing_tally:
-    if missing_gstr1:
-        st.warning(
-            "GSTR-1 required columns not detected: "
-            + ", ".join(missing_gstr1)
-        )
-    if missing_tally:
-        st.warning(
-            "Tally required columns not detected: "
-            + ", ".join(missing_tally)
-        )
-
-    st.stop()
-
-gstr1 = standardize_dataframe(raw_gstr1, gstr1_mapping)
-tally = standardize_dataframe(raw_tally, tally_mapping)
-
-results, summary = reconcile_data(
-    gstr1,
-    tally,
-    tolerance=tolerance,
-)
-
-st.markdown('<div class="section-label">GST Health Dashboard</div>', unsafe_allow_html=True)
-
-metric_cols = st.columns(5)
-
-metric_cols[0].metric(
-    "Total Invoices",
-    f"{summary['total_invoices']:,}",
-)
-
-metric_cols[1].metric(
-    "Matched Invoices",
-    f"{summary['matched_invoices']:,}",
-)
-
-metric_cols[2].metric(
-    "Mismatches",
-    f"{summary['mismatch_invoices']:,}",
-)
-
-metric_cols[3].metric(
-    "GST Exposure",
-    f"Rs {summary['gst_exposure']:,.2f}",
-)
-
-metric_cols[4].metric(
-    "GST Health Score",
-    f"{summary['health_score']:.1f}/100",
-)
-
-st.progress(
-    min(max(summary["health_score"] / 100, 0.0), 1.0),
-    text=f"Reconciliation health: {summary['health_score']:.1f}%",
-)
-
-left_col, right_col = st.columns([1, 2])
-
-with left_col:
-    st.subheader("Exception Breakdown")
-
-    issue_data = pd.DataFrame(
-        [
-            {"Issue": label, "Count": count}
-            for label, count in summary["issue_counts"].items()
-            if count > 0
-        ]
-    )
-
-    if issue_data.empty:
-        st.success("No reconciliation exceptions detected.")
+if run:
+    invoice_sources={}; gstr3b_raw=None
+    validation_frames=[]
+    progress=st.progress(0,"Reading source files…")
+    for name,up in uploads.items():
+        if up and name=="GSTR-3B":
+            try: gstr3b_raw=pd.read_csv(up) if up.name.lower().endswith(".csv") else pd.read_excel(up)
+            except Exception as exc: st.error(f"Could not read GSTR-3B: {exc}")
+        elif up:
+            try:
+                df=read_upload(up); invoice_sources[name]=df; validation_frames.append(validation_report(df,name))
+            except Exception as exc: st.error(f"Could not read {name}: {exc}")
+    progress.progress(55,"Reconciling invoices…")
+    if len(invoice_sources) < 2:
+        st.error("Upload at least two invoice-level sources (GSTR-1, Tally, or Zoho) for invoice reconciliation.")
     else:
-        st.bar_chart(
-            issue_data.set_index("Issue"),
-            horizontal=True,
-        )
+        st.session_state.recon=reconcile(invoice_sources)
+        st.session_state.validations=pd.concat(validation_frames,ignore_index=True) if validation_frames else pd.DataFrame()
+        st.session_state.insights=generate_insights(st.session_state.recon)
+        st.session_state.gstr3b=gstr3b_control(invoice_sources.get("GSTR-1"),gstr3b_raw)
+        progress.progress(100,"Analysis complete."); st.success("Reconciliation completed successfully.")
 
-with right_col:
-    st.subheader("Management Summary")
-    st.text_area(
-        "AI-generated management summary",
-        value=generate_management_summary(summary),
-        height=260,
-        label_visibility="collapsed",
-    )
-
-st.markdown('<div class="section-label">Invoice-Level Reconciliation</div>', unsafe_allow_html=True)
-
-status_filter = st.multiselect(
-    "Filter by status",
-    options=["Matched", "Mismatch", "Review"],
-    default=["Mismatch", "Review", "Matched"],
-)
-
-filtered_results = results[
-    results["status"].isin(status_filter)
-].copy()
-
-display_columns = [
-    "invoice_number",
-    "status",
-    "issues",
-    "gstr1_gstin",
-    "tally_gstin",
-    "gstr1_taxable_value",
-    "tally_taxable_value",
-    "gstr1_igst",
-    "tally_igst",
-    "gstr1_cgst",
-    "tally_cgst",
-    "gstr1_sgst",
-    "tally_sgst",
-    "gst_exposure",
-]
-
-st.dataframe(
-    filtered_results[display_columns],
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "gstr1_taxable_value": st.column_config.NumberColumn(
-            "GSTR-1 Taxable Value",
-            format="Rs %.2f",
-        ),
-        "tally_taxable_value": st.column_config.NumberColumn(
-            "Tally Taxable Value",
-            format="Rs %.2f",
-        ),
-        "gstr1_igst": st.column_config.NumberColumn(
-            "GSTR-1 IGST",
-            format="Rs %.2f",
-        ),
-        "tally_igst": st.column_config.NumberColumn(
-            "Tally IGST",
-            format="Rs %.2f",
-        ),
-        "gstr1_cgst": st.column_config.NumberColumn(
-            "GSTR-1 CGST",
-            format="Rs %.2f",
-        ),
-        "tally_cgst": st.column_config.NumberColumn(
-            "Tally CGST",
-            format="Rs %.2f",
-        ),
-        "gstr1_sgst": st.column_config.NumberColumn(
-            "GSTR-1 SGST",
-            format="Rs %.2f",
-        ),
-        "tally_sgst": st.column_config.NumberColumn(
-            "Tally SGST",
-            format="Rs %.2f",
-        ),
-        "gst_exposure": st.column_config.NumberColumn(
-            "GST Exposure",
-            format="Rs %.2f",
-        ),
-    },
-)
-
-st.subheader("AI Explanation")
-
-if filtered_results.empty:
-    st.info("No invoices match the selected filters.")
-else:
-    selected_invoice = st.selectbox(
-        "Select an invoice",
-        options=filtered_results["invoice_number"].tolist(),
-    )
-
-    selected_row = filtered_results[
-        filtered_results["invoice_number"] == selected_invoice
-    ].iloc[0]
-
-    if selected_row["status"] == "Matched":
-        st.success(
-            f"{selected_invoice} matched successfully across both files."
-        )
-    else:
-        st.warning(selected_row["ai_explanation"])
-
-st.subheader("Export")
-
-export_buffer = io.BytesIO()
-with pd.ExcelWriter(export_buffer, engine="openpyxl") as writer:
-    results.drop(columns=["issue_codes"], errors="ignore").to_excel(
-        writer,
-        index=False,
-        sheet_name="Reconciliation",
-    )
-
-    pd.DataFrame(
-        [
-            {
-                "Metric": "Total Invoices",
-                "Value": summary["total_invoices"],
-            },
-            {
-                "Metric": "Matched Invoices",
-                "Value": summary["matched_invoices"],
-            },
-            {
-                "Metric": "Mismatches",
-                "Value": summary["mismatch_invoices"],
-            },
-            {
-                "Metric": "GST Exposure",
-                "Value": summary["gst_exposure"],
-            },
-            {
-                "Metric": "GST Health Score",
-                "Value": summary["health_score"],
-            },
-        ]
-    ).to_excel(
-        writer,
-        index=False,
-        sheet_name="Summary",
-    )
-
-st.download_button(
-    "Download Reconciliation Excel",
-    data=export_buffer.getvalue(),
-    file_name="gst_reconciliation_output.xlsx",
-    mime=(
-        "application/vnd.openxmlformats-officedocument."
-        "spreadsheetml.sheet"
-    ),
-)
-
-st.download_button(
-    "Download Management Summary",
-    data=generate_management_summary(summary),
-    file_name="gst_management_summary.txt",
-    mime="text/plain",
-)
+if "recon" not in st.session_state:
+    st.info("Upload source registers in the sidebar and select **Run Reconciliation**. Use `python sample_data_generator.py` to create a demo dataset.")
+    st.stop()
+recon, validations, insights=st.session_state.recon,st.session_state.validations,st.session_state.insights
+gstr3b=st.session_state.get("gstr3b",pd.DataFrame())
+s=summary(recon,validations)
+cols=st.columns(6)
+for c,label,value in zip(cols,["Total Invoices","Matched","Mismatches","Match %","GST Exposure","Health Score"],[s["total"],s["matched"],s["mismatches"],f'{s["match_pct"]}%',f'₹{s["exposure"]:,.0f}',f'{s["score"]}/100']): c.metric(label,value)
+st.caption(f"Risk level: **{s['risk']}** — {s['score_reason']}")
+tab1,tab2,tab3,tab4=st.tabs(["Dashboard","Reconciliation","Exceptions & Validation","Exports"])
+with tab1:
+    left,right=st.columns(2); mismatches=recon[recon.Status=="Mismatch"]
+    with left:
+        if not mismatches.empty: st.plotly_chart(px.pie(mismatches,names="Mismatch Type",title="Mismatch Type Distribution"),use_container_width=True)
+    with right:
+        risk=mismatches.groupby("Customer",as_index=False)["Exposure Amount"].sum().nlargest(10,"Exposure Amount")
+        if not risk.empty: st.plotly_chart(px.bar(risk,x="Customer",y="Exposure Amount",title="Top Risk Customers"),use_container_width=True)
+    monthly=recon.assign(Month=pd.to_datetime(recon["Invoice Date"]).dt.to_period("M").astype(str)).groupby("Month",as_index=False)["Exposure Amount"].sum()
+    if not monthly.empty: st.plotly_chart(px.line(monthly,x="Month",y="Exposure Amount",markers=True,title="Monthly Exposure Trend"),use_container_width=True)
+with tab2:
+    st.subheader("Invoice reconciliation ledger"); st.dataframe(recon,use_container_width=True,hide_index=True)
+    if not gstr3b.empty:
+        st.subheader("GSTR-1 vs GSTR-3B aggregate control"); st.dataframe(gstr3b,use_container_width=True,hide_index=True)
+with tab3:
+    st.subheader("AI-style exception guidance"); st.dataframe(insights,use_container_width=True,hide_index=True)
+    st.subheader("Validation report"); st.dataframe(validations,use_container_width=True,hide_index=True)
+with tab4:
+    management=pd.DataFrame([{"Metric":"Total invoices processed","Value":s["total"]},{"Metric":"Matched invoices","Value":s["matched"]},{"Metric":"Mismatch invoices","Value":s["mismatches"]},{"Metric":"Match percentage","Value":s["match_pct"]},{"Metric":"GST exposure","Value":s["exposure"]},{"Metric":"GST health score","Value":s["score"]},{"Metric":"Risk level","Value":s["risk"]}])
+    st.download_button("Download Excel Reconciliation Report",excel_bytes({"Reconciliation":recon,"GSTR3B Control":gstr3b,"Validations":validations,"Insights":insights}),"gst_reconciliation_report.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Download Exception Report",excel_bytes({"Exceptions":insights}),"gst_exception_report.xlsx")
+    st.download_button("Download GST Exposure Report",excel_bytes({"Exposure":recon[recon.Status=="Mismatch"]}),"gst_exposure_report.xlsx")
+    st.download_button("Download Management Summary",excel_bytes({"Management Summary":management}),"gst_management_summary.xlsx")
