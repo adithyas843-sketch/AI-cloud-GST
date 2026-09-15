@@ -8,7 +8,7 @@ from validators import validation_report
 from ai_insights import generate_insights
 
 st.set_page_config(page_title="AI GST Compliance Copilot", page_icon="🧾", layout="wide")
-st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}[data-testid="stMetricLabel"]{color:white!important;font-weight:600}[data-testid="stMetricValue"]{color:white!important;font-weight:700}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
+st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}[data-testid="stMetricLabel"]{color:white!important;font-weight:600}[data-testid="stMetricValue"]{color:white!important;font-weight:700;font-size:24px!important;}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
 st.title("AI GST Compliance Copilot")
 st.caption("Invoice-level GST reconciliation, exception intelligence, and audit-ready reporting.")
 
@@ -55,7 +55,7 @@ if "recon" not in st.session_state:
 recon, validations, insights=st.session_state.recon,st.session_state.validations,st.session_state.insights
 gstr3b=st.session_state.get("gstr3b",pd.DataFrame())
 s=summary(recon,validations)
-cols=st.columns(6)
+cols=st.columns([1.2,1.2,1.2,1.2,1.4,1.4])
 for c,label,value in zip(cols,["Total Invoices","Matched","Mismatches","Match %","GST Exposure","Health Score"],[s["total"],s["matched"],s["mismatches"],f'{s["match_pct"]}%',f'₹{s["exposure"]:,.0f}',f'{s["score"]}/100']): c.metric(label,value)
 st.caption(f"Risk level: **{s['risk']}** — {s['score_reason']}")
 tab1,tab2,tab3,tab4=st.tabs(["Dashboard","Reconciliation","Exceptions & Validation","Exports"])
