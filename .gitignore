@@ -3,4 +3,5 @@ __pycache__/
 .streamlit/secrets.toml
 *.py[cod]
 .vendor/
-sample_*.xlsx
+node_modules/
+/sample_*.xlsx
