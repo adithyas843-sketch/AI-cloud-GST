@@ -14,6 +14,47 @@ MATCH_FILL = "#C6EFCE"
 WARNING_FILL = "#FFF2CC"
 MISMATCH_FILL = "#FFC7CE"
 
+TEMPLATE_DEFINITIONS = {
+    "GSTR-1": (
+        ["Customer GSTIN", "Invoice no", "Date", "Customer Name", "Item Taxable Value", "IGST", "CGST", "SGST"],
+        [["27ABCDE1234F1Z5", "G1-1001", "05-Apr-2026", "Aster Retail", 100000, 18000, 0, 0], ["29PQRSX6789L1Z2", "G1-1002", "08-Apr-2026", "Bluebird Foods", 50000, 0, 4500, 4500]],
+    ),
+    "Tally": (
+        ["GSTIN", "Voucher Number", "Voucher Date", "Party Name", "Taxable Value", "IGST", "CGST", "SGST"],
+        [["27ABCDE1234F1Z5", "G1-1001", "05-Apr-2026", "Aster Retail", 100000, 18000, 0, 0], ["29PQRSX6789L1Z2", "G1-1002", "08-Apr-2026", "Bluebird Foods", 50000, 0, 4500, 4500]],
+    ),
+    "Zoho": (
+        ["GSTIN", "Invoice Number", "Invoice Date", "Customer Name", "Taxable Value", "IGST", "CGST", "SGST"],
+        [["27ABCDE1234F1Z5", "G1-1001", "05-Apr-2026", "Aster Retail", 100000, 18000, 0, 0], ["29PQRSX6789L1Z2", "G1-1002", "08-Apr-2026", "Bluebird Foods", 50000, 0, 4500, 4500]],
+    ),
+    "GSTR-3B": (
+        ["Month", "Taxable Value", "IGST", "CGST", "SGST"],
+        [["Apr-2026", 150000, 18000, 4500, 4500], ["May-2026", 75000, 13500, 0, 0]],
+    ),
+}
+
+
+def sample_template_bytes(source_name: str) -> bytes:
+    """Create a deploy-safe sample template when a bundled file is unavailable."""
+    headers, rows = TEMPLATE_DEFINITIONS[source_name]
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {"in_memory": True})
+    sheet = workbook.add_worksheet("Sample Data")
+    header_format = workbook.add_format({"font_name": "Book Antiqua", "bold": True, "font_color": "#FFFFFF", "bg_color": SOURCE_HEADER, "border": 1})
+    body_format = workbook.add_format({"font_name": "Book Antiqua", "border": 1, "border_color": "#D9D9D9"})
+    for col, header in enumerate(headers):
+        sheet.write(0, col, header, header_format)
+        values = [str(row[col]) for row in rows]
+        sheet.set_column(col, col, min(max(len(str(header)), *(len(value) for value in values)) + 2, 32))
+    for row_index, row in enumerate(rows, start=1):
+        for col, value in enumerate(row):
+            _write_value(sheet, row_index, col, value, body_format)
+    sheet.autofilter(0, 0, len(rows), len(headers) - 1)
+    sheet.freeze_panes(1, 0)
+    sheet.hide_gridlines(2)
+    workbook.close()
+    return output.getvalue()
+
 
 def _is_blank(value: Any) -> bool:
     return value is None or (not isinstance(value, str) and bool(pd.isna(value)))
@@ -42,9 +83,10 @@ def _write_value(worksheet, row: int, col: int, value: Any, cell_format) -> None
         worksheet.write(row, col, str(value), cell_format)
 
 
-def _column_width(frame: pd.DataFrame, column: str) -> int:
-    values = frame[column].astype(str).replace("nan", "") if not frame.empty else pd.Series(dtype=str)
-    widest = max([len(str(column)), *(len(value) for value in values.head(500))], default=len(str(column)))
+def _column_width(values: pd.Series, heading: Any) -> int:
+    """Return a safe display width for any source-data type or column heading."""
+    rendered = ["" if _is_blank(value) else str(value) for value in values.head(500).tolist()]
+    widest = max([len(str(heading)), *(len(value) for value in rendered)], default=len(str(heading)))
     return min(max(widest + 2, 12), 32)
 
 
@@ -54,7 +96,7 @@ def _write_source_sheet(workbook, sheet_name: str, source_data: pd.DataFrame, mi
     headers = list(source_data.columns)
     for col, header in enumerate(headers):
         worksheet.write(0, col, header, formats["header"])
-        worksheet.set_column(col, col, _column_width(source_data, header))
+        worksheet.set_column(col, col, _column_width(source_data.iloc[:, col], header))
     for excel_row, (_, row) in enumerate(source_data.iterrows(), start=2):
         row_format = formats["source_mismatch"] if excel_row in mismatch_rows else formats["body"]
         for col, value in enumerate(row.tolist()):

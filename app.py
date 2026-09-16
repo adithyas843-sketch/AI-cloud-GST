@@ -7,7 +7,7 @@ import streamlit as st
 from reconciliation import read_upload, reconcile, summary, gstr3b_control
 from validators import validation_report
 from ai_insights import generate_insights
-from export_utils import professional_report_bytes
+from export_utils import professional_report_bytes, sample_template_bytes
 
 st.set_page_config(page_title="AI GST Compliance Copilot", page_icon="🧾", layout="wide")
 st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}[data-testid="stMetricLabel"]{color:white!important;font-weight:600}[data-testid="stMetricValue"]{color:white!important;font-weight:700}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
@@ -33,8 +33,8 @@ with st.sidebar:
     for label,key in [("GSTR-1 Export","GSTR-1"),("Tally Sales Register","Tally"),("Zoho Books Sales Register","Zoho"),("GSTR-3B Summary","GSTR-3B")]:
         uploads[key]=st.file_uploader(label,type=["xlsx","xls","csv"],key=key)
         template_path = TEMPLATE_DIR / TEMPLATES[key]
-        if template_path.exists():
-            st.download_button("📥 Download Sample Template", data=template_path.read_bytes(), file_name=TEMPLATES[key], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"template_{key}", use_container_width=True)
+        template_data = template_path.read_bytes() if template_path.exists() else sample_template_bytes(key)
+        st.download_button("📥 Download Sample Template", data=template_data, file_name=TEMPLATES[key], mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"template_{key}", use_container_width=True)
     run=st.button("Run Reconciliation",type="primary",use_container_width=True)
     st.divider(); st.subheader("About")
     st.caption("Files stay in memory for the duration of this session. Review all recommendations with supporting documents before filing.")
@@ -98,5 +98,8 @@ with tab4:
     if "GSTR-1" not in standardized or books_source is None:
         st.info("Upload GSTR-1 and either Tally or Zoho to create the professional reconciliation workbook.")
     else:
-        workbook=professional_report_bytes(originals["GSTR-1"], originals[books_source], standardized["GSTR-1"], standardized[books_source], recon)
-        st.download_button("Download Professional Reconciliation Workbook", workbook, "gst_reconciliation_workbook.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        try:
+            workbook=professional_report_bytes(originals["GSTR-1"], originals[books_source], standardized["GSTR-1"], standardized[books_source], recon)
+            st.download_button("Download Professional Reconciliation Workbook", workbook, "gst_reconciliation_workbook.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        except Exception as exc:
+            st.error(f"The export workbook could not be prepared: {exc}")
