@@ -15,8 +15,7 @@ from validators import validation_report
 
 
 st.set_page_config(page_title="AI GST Compliance Copilot", page_icon="🧾", layout="wide")
-st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}[data-testid="stMetricLabel"]{color:white!important;font-weight:600}[data-testid="stMetricValue"]{color:white!important;font-weight:700}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
-
+st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25)}[data-testid="stMetricLabel"]{color:white!important;font-weight:600;font-size:14px!important;}[data-testid="stMetricValue"]{color:white!important;font-weight:700;font-size:28px!important;}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 UPLOAD_CONFIGS = [
     ("Sales Register", "sample_sales_register.xlsx", True),
