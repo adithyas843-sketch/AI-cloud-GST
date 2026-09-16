@@ -14,7 +14,7 @@ from storage import clear_reconciliation_results, clear_uploaded_files, load_sta
 from validators import validation_report
 
 
-st.set_page_config(page_title="AI GST Compliance Copilot", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="AI GST Reconciliation Suite", page_icon="🧾", layout="wide")
 st.markdown('<style>[data-testid="stMetric"]{background-color:#1e293b;border:1px solid #334155;padding:15px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,.25);min-height:140px;}[data-testid="stMetricLabel"]{color:white!important;font-weight:600;font-size:14px!important;}[data-testid="stMetricValue"]{color:white!important;font-weight:700;font-size:22px!important;line-height:1.2!important;}.block-container{padding-top:1.5rem}</style>', unsafe_allow_html=True)
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 UPLOAD_CONFIGS = [
