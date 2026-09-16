@@ -19,7 +19,7 @@ def validation_report(frame: pd.DataFrame, source: str = "Books") -> pd.DataFram
     if frame is None or frame.empty:
         return pd.DataFrame(columns=["Source", "Row", "Invoice Number", "GSTIN", "Issue", "Severity", "Details"])
     rows = []
-    mandatory = ["Invoice Number", "Invoice Date", "GSTIN"]
+    mandatory = ["Document Type", "Invoice Number", "Invoice Date", "GSTIN"]
     amount_cols = ["Taxable Value", "IGST", "CGST", "SGST"]
     for idx, r in frame.iterrows():
         inv, gstin = r.get("Invoice Number"), r.get("GSTIN")
@@ -38,10 +38,10 @@ def validation_report(frame: pd.DataFrame, source: str = "Books") -> pd.DataFram
             value = pd.to_numeric(r.get(col), errors="coerce")
             if not pd.isna(value) and value < 0:
                 add(f"Negative {col}", "Medium", f"{col} is negative.")
-    dupe_cols = [c for c in ["GSTIN", "Invoice Number"] if c in frame]
-    if len(dupe_cols) == 2:
+    dupe_cols = [c for c in ["Document Type", "GSTIN", "Invoice Number"] if c in frame]
+    if len(dupe_cols) == 3:
         for idx, r in frame[frame.duplicated(dupe_cols, keep=False)].iterrows():
             rows.append({"Source": source, "Row": int(idx)+2, "Invoice Number": r.get("Invoice Number"),
                          "GSTIN": r.get("GSTIN"), "Issue": "Duplicate invoice", "Severity": "High",
-                         "Details": "GSTIN and invoice number occur more than once."})
+                         "Details": "Document type, GSTIN and invoice number occur more than once."})
     return pd.DataFrame(rows, columns=["Source", "Row", "Invoice Number", "GSTIN", "Issue", "Severity", "Details"])
