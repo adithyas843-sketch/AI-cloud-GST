@@ -5,13 +5,14 @@ import numpy as np
 import pandas as pd
 
 ALIASES = {
+ "Document Type": ["document type", "document type name", "transaction type", "voucher type", "entry type"],
  "GSTIN": ["gstin", "customer gstin", "gst number", "gst registration no", "party gstin", "gst identification number"],
  "Invoice Number": ["invoice number", "invoice no", "inv no", "voucher number", "document number", "reference number"],
  "Invoice Date": ["invoice date", "date", "voucher date", "document date"],
  "Taxable Value": ["taxable value", "tax amount", "assessable value", "taxable amount"],
  "IGST": ["igst", "integrated tax"], "CGST": ["cgst", "central tax"], "SGST": ["sgst", "state tax"],
- "Customer": ["customer", "customer name", "party name", "buyer name", "ledger name"]}
-REQUIRED = ["GSTIN", "Invoice Number", "Invoice Date", "Taxable Value", "IGST", "CGST", "SGST"]
+ "Customer": ["customer", "customer name", "party name", "buyer name", "ledger name", "vendor name", "supplier name"]}
+REQUIRED = ["Document Type", "GSTIN", "Invoice Number", "Invoice Date", "Taxable Value", "IGST", "CGST", "SGST"]
 
 def _norm(x): return re.sub(r"[^a-z0-9]", "", str(x).lower())
 def standardize_columns(raw: pd.DataFrame) -> pd.DataFrame:
@@ -24,8 +25,10 @@ def standardize_columns(raw: pd.DataFrame) -> pd.DataFrame:
     for col in REQUIRED:
         if col not in out: out[col] = np.nan
     if "Customer" not in out: out["Customer"] = "Unspecified customer"
+    out["Document Type"] = out["Document Type"].fillna("Invoice").astype(str).str.strip().str.title()
+    out.loc[out["Document Type"].eq(""), "Document Type"] = "Invoice"
     out["GSTIN"] = out["GSTIN"].fillna("").astype(str).str.strip().str.upper()
-    out["Invoice Number"] = out["Invoice Number"].fillna("").astype(str).str.strip().str.upper()
+    out["Invoice Number"] = out["Invoice Number"].fillna("").astype(str).str.strip().str.upper().str.replace(r"\.0$", "", regex=True)
     out["Invoice Date"] = pd.to_datetime(out["Invoice Date"], errors="coerce")
     for col in ["Taxable Value", "IGST", "CGST", "SGST"]: out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0.0)
     return out
@@ -35,17 +38,27 @@ def read_upload(uploaded) -> pd.DataFrame:
     raw = pd.read_csv(uploaded) if name.endswith(".csv") else pd.read_excel(uploaded)
     return standardize_columns(raw)
 
-def _key(df): return df["GSTIN"].astype(str) + "|" + df["Invoice Number"].astype(str)
+def _key(df): return df["Document Type"].astype(str) + "|" + df["GSTIN"].astype(str) + "|" + df["Invoice Number"].astype(str)
 
 def _missing_source_reason(base: pd.Series, candidate_source: pd.DataFrame, source_name: str) -> str:
     """Classify a missing composite key using invoice/date candidates in a source."""
-    same_invoice = candidate_source[candidate_source["Invoice Number"] == base["Invoice Number"]]
-    if not same_invoice.empty and (same_invoice["GSTIN"] != base["GSTIN"]).any():
+    same_document_invoice = candidate_source[
+        (candidate_source["Document Type"] == base["Document Type"])
+        & (candidate_source["Invoice Number"] == base["Invoice Number"])
+    ]
+    if not same_document_invoice.empty and (same_document_invoice["GSTIN"] != base["GSTIN"]).any():
         return f"GSTIN mismatch with {source_name}"
+    same_gstin_invoice = candidate_source[
+        (candidate_source["GSTIN"] == base["GSTIN"])
+        & (candidate_source["Invoice Number"] == base["Invoice Number"])
+    ]
+    if not same_gstin_invoice.empty and (same_gstin_invoice["Document Type"] != base["Document Type"]).any():
+        return f"Document type mismatch with {source_name}"
     invoice_date = base["Invoice Date"]
     if not pd.isna(invoice_date):
         same_gstin_date = candidate_source[
-            (candidate_source["GSTIN"] == base["GSTIN"])
+            (candidate_source["Document Type"] == base["Document Type"])
+            & (candidate_source["GSTIN"] == base["GSTIN"])
             & (candidate_source["Invoice Date"] == invoice_date)
         ]
         if len(same_gstin_date) == 1:
@@ -58,13 +71,13 @@ def reconcile(sources: dict[str, pd.DataFrame], tolerance: float = 1.0) -> pd.Da
     """Outer-join all supplied registers, producing a source-aware exception ledger."""
     active = {name: standardize_columns(df) for name, df in sources.items() if df is not None and not df.empty}
     if not active:
-        return pd.DataFrame(columns=["GSTIN", "Invoice Number", "Invoice Date", "Customer", "Status", "Mismatch Type", "Taxable Difference", "IGST Difference", "CGST Difference", "SGST Difference", "Exposure Amount", "Remarks"])
+        return pd.DataFrame(columns=["Document Type", "GSTIN", "Invoice Number", "Invoice Date", "Customer", "Status", "Mismatch Type", "Taxable Difference", "IGST Difference", "CGST Difference", "SGST Difference", "Exposure Amount", "Remarks"])
     all_keys = pd.Index([])
     keyed = {}
     for name, df in active.items():
         copy = df.copy(); copy["_key"] = _key(copy)
         # deterministic aggregation also exposes multi-mapping as a mismatch
-        grouped = copy.groupby("_key", dropna=False).agg({"GSTIN":"first", "Invoice Number":"first", "Invoice Date":"first", "Customer":"first", "Taxable Value":"sum", "IGST":"sum", "CGST":"sum", "SGST":"sum"})
+        grouped = copy.groupby("_key", dropna=False).agg({"Document Type":"first", "GSTIN":"first", "Invoice Number":"first", "Invoice Date":"first", "Customer":"first", "Taxable Value":"sum", "IGST":"sum", "CGST":"sum", "SGST":"sum"})
         grouped["_count"] = copy.groupby("_key").size(); keyed[name] = grouped
         all_keys = all_keys.union(grouped.index)
     records=[]
@@ -85,7 +98,7 @@ def reconcile(sources: dict[str, pd.DataFrame], tolerance: float = 1.0) -> pd.Da
         dates=[r["Invoice Date"] for r in comparisons if not pd.isna(r["Invoice Date"])]
         if len(set(dates))>1: reasons.append("Invoice date mismatch")
         status="Matched" if not reasons else "Mismatch"
-        records.append({"GSTIN":base["GSTIN"], "Invoice Number":base["Invoice Number"], "Invoice Date":base["Invoice Date"], "Customer":base["Customer"], "Status":status, "Mismatch Type":"; ".join(reasons) if reasons else "None", "Taxable Difference":diffs["Taxable Value"], "IGST Difference":diffs["IGST"], "CGST Difference":diffs["CGST"], "SGST Difference":diffs["SGST"], "Exposure Amount":abs(diffs["IGST"])+abs(diffs["CGST"])+abs(diffs["SGST"]), "Remarks":"Reconcile source documents and return filing." if reasons else "Reconciled successfully."})
+        records.append({"Document Type":base["Document Type"], "GSTIN":base["GSTIN"], "Invoice Number":base["Invoice Number"], "Invoice Date":base["Invoice Date"], "Customer":base["Customer"], "Status":status, "Mismatch Type":"; ".join(reasons) if reasons else "None", "Taxable Difference":diffs["Taxable Value"], "IGST Difference":diffs["IGST"], "CGST Difference":diffs["CGST"], "SGST Difference":diffs["SGST"], "Exposure Amount":abs(diffs["IGST"])+abs(diffs["CGST"])+abs(diffs["SGST"]), "Remarks":"Reconcile source documents and return filing." if reasons else "Reconciled successfully."})
     result = pd.DataFrame(records)
     return result.sort_values(["Status", "Exposure Amount"], ascending=[True, False]).reset_index(drop=True)
 
@@ -99,6 +112,30 @@ def gstr3b_control(gstr1: pd.DataFrame, gstr3b: pd.DataFrame, tolerance: float =
         a, b = float(left[col].sum()), float(right[col].sum())
         rows.append({"Tax Component":col,"GSTR-1":a,"GSTR-3B":b,"Difference":a-b,
                      "Status":"Matched" if abs(a-b)<=tolerance else "Mismatch"})
+    return pd.DataFrame(rows)
+
+def gstr3b_reconciliation(gstr1: pd.DataFrame, gstr3b: pd.DataFrame, tolerance: float = 1.0) -> pd.DataFrame:
+    """Express the GSTR-1 versus GSTR-3B control in the common export schema."""
+    control = gstr3b_control(gstr1, gstr3b, tolerance)
+    rows = []
+    for _, item in control.iterrows():
+        component = item["Tax Component"]
+        difference = float(item["Difference"])
+        rows.append({
+            "Document Type": "Summary",
+            "GSTIN": "",
+            "Invoice Number": component,
+            "Invoice Date": pd.NaT,
+            "Customer": "GSTR-1 versus GSTR-3B",
+            "Status": item["Status"],
+            "Mismatch Type": "None" if item["Status"] == "Matched" else f"{component} mismatch",
+            "Taxable Difference": 0.0,
+            "IGST Difference": difference if component == "IGST" else 0.0,
+            "CGST Difference": difference if component == "CGST" else 0.0,
+            "SGST Difference": difference if component == "SGST" else 0.0,
+            "Exposure Amount": abs(difference),
+            "Remarks": "Aggregate tax control matched." if item["Status"] == "Matched" else "Review GSTR-1 totals against GSTR-3B filing totals.",
+        })
     return pd.DataFrame(rows)
 
 def health_score(recon: pd.DataFrame, validations: pd.DataFrame) -> tuple[int, str]:
