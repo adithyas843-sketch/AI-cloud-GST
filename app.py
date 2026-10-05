@@ -221,14 +221,87 @@ with tab4:
     originals = st.session_state.get("source_originals", {})
     standardized = st.session_state.get("invoice_sources", {})
     pair_results = st.session_state.get("pair_reconciliations", {})
+
     for pair_key, (source_name, reference_name, title, filename) in PAIR_CONFIGS.items():
         reconciliation = pair_results.get(pair_key)
+
         if reconciliation is None:
-            st.info(f"{title}: upload both source files and run reconciliation to enable this export.")
+            st.info(
+                f"{title}: upload both source files and run reconciliation to enable this export."
+            )
             continue
+
         try:
-            reference_standardized = standardized.get(reference_name, originals.get(reference_name, pd.DataFrame()))
-            workbook = reconciliation_export_bytes(source_name, reference_name, originals[source_name], originals[reference_name], standardized.get(source_name, originals[source_name]), reference_standardized, reconciliation)
-            st.download_button(f"Download {title}", workbook, filename, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key=f"export_{pair_key}", use_container_width=True)
+            reference_standardized = standardized.get(
+                reference_name,
+                originals.get(reference_name, pd.DataFrame()),
+            )
+
+            workbook = reconciliation_export_bytes(
+                source_name,
+                reference_name,
+                originals[source_name],
+                originals[reference_name],
+                standardized.get(
+                    source_name,
+                    originals[source_name],
+                ),
+                reference_standardized,
+                reconciliation,
+            )
+
+            st.download_button(
+                f"Download {title}",
+                workbook,
+                filename,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"export_{pair_key}",
+                use_container_width=True,
+            )
+
         except Exception as exc:
-            st.error(f"{title} export could not be prepared: {exc}")
+            st.error(
+                f"{title} export could not be prepared: {exc}"
+            )
+
+    st.divider()
+    st.subheader("GST Monthly Control Report")
+
+    try:
+
+        gstr1_df = standardized.get(
+            "GSTR-1",
+            pd.DataFrame(),
+        )
+
+        sales_df = standardized.get(
+            "Sales Register",
+            pd.DataFrame(),
+        )
+
+        gstr3b_df = originals.get(
+            "GSTR-3B",
+            pd.DataFrame(),
+        )
+
+        workbook = monthly_control_report_bytes(
+            gstr1_df,
+            sales_df,
+            gstr3b_df,
+            pair_results.get("gstr1_sales"),
+            pair_results.get("gstr1_3b"),
+        )
+
+        st.download_button(
+            "📊 Download GST Monthly Control Report",
+            workbook,
+            "gst_monthly_control_report.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="monthly_control_report",
+            use_container_width=True,
+        )
+
+    except Exception as exc:
+        st.error(
+            f"GST Monthly Control Report could not be prepared: {exc}"
+        )
