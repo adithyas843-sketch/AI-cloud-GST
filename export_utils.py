@@ -185,3 +185,213 @@ def reconciliation_export_bytes(source_sheet_name: str, reference_sheet_name: st
 def professional_report_bytes(gstr1_original, books_original, gstr1_standardized, books_standardized, reconciliation) -> bytes:
     """Backward-compatible wrapper for the original GSTR-1 vs Books export."""
     return reconciliation_export_bytes("GSTR-1", "Books Data", gstr1_original, books_original, gstr1_standardized, books_standardized, reconciliation)
+
+
+def monthly_control_report_bytes(
+    gstr1_df,
+    sales_df,
+    gstr3b_df,
+    sales_reco_df,
+    gstr3b_reco_df,
+):
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+
+        workbook = writer.book
+
+        header_fmt = workbook.add_format({
+            "font_name": "Book Antiqua",
+            "bold": True,
+            "font_color": "white",
+            "bg_color": "#1F4E78",
+            "border": 1,
+            "align": "center",
+        })
+
+        body_fmt = workbook.add_format({
+            "font_name": "Book Antiqua",
+            "border": 1,
+        })
+
+        amount_fmt = workbook.add_format({
+            "font_name": "Book Antiqua",
+            "border": 1,
+            "num_format": "#,##0.00",
+        })
+
+        worksheet = workbook.add_worksheet("Monthly Summary")
+
+        row = 0
+
+        worksheet.merge_range(
+            row,
+            0,
+            row,
+            12,
+            "GST MONTHLY CONTROL REPORT",
+            header_fmt,
+        )
+
+        row += 2
+
+        def build_monthly(df):
+
+            if df is None or df.empty:
+                return pd.DataFrame()
+
+            temp = df.copy()
+
+            if "Invoice Date" not in temp.columns:
+                return pd.DataFrame()
+
+            temp["Month"] = pd.to_datetime(
+                temp["Invoice Date"],
+                errors="coerce",
+            ).dt.strftime("%b-%Y")
+
+            return (
+                temp.groupby("Month", dropna=False)
+                .agg({
+                    "Taxable Value": "sum",
+                    "IGST": "sum",
+                    "CGST": "sum",
+                    "SGST": "sum",
+                })
+                .reset_index()
+            )
+
+        gstr1_monthly = build_monthly(gstr1_df)
+        sales_monthly = build_monthly(sales_df)
+
+        worksheet.write(row, 0, "GSTR-1 VS SALES REGISTER", header_fmt)
+        row += 1
+
+        if not gstr1_monthly.empty and not sales_monthly.empty:
+
+            compare = pd.merge(
+                gstr1_monthly,
+                sales_monthly,
+                on="Month",
+                how="outer",
+                suffixes=("_GSTR1", "_BOOKS"),
+            ).fillna(0)
+
+            compare["Taxable Difference"] = (
+                compare["Taxable Value_GSTR1"]
+                - compare["Taxable Value_BOOKS"]
+            )
+
+            compare["IGST Difference"] = (
+                compare["IGST_GSTR1"]
+                - compare["IGST_BOOKS"]
+            )
+
+            compare["CGST Difference"] = (
+                compare["CGST_GSTR1"]
+                - compare["CGST_BOOKS"]
+            )
+
+            compare["SGST Difference"] = (
+                compare["SGST_GSTR1"]
+                - compare["SGST_BOOKS"]
+            )
+
+            compare.to_excel(
+                writer,
+                sheet_name="Monthly Summary",
+                startrow=row,
+                startcol=0,
+                index=False,
+            )
+
+            row += len(compare) + 4
+
+        worksheet.write(row, 0, "GSTR-1 VS GSTR-3B", header_fmt)
+        row += 1
+
+        if (
+            gstr3b_df is not None
+            and not gstr3b_df.empty
+            and not gstr1_monthly.empty
+        ):
+
+            compare_3b = pd.merge(
+                gstr1_monthly,
+                gstr3b_df,
+                on="Month",
+                how="outer",
+                suffixes=("_GSTR1", "_GSTR3B"),
+            ).fillna(0)
+
+            compare_3b["Taxable Difference"] = (
+                compare_3b["Taxable Value_GSTR1"]
+                - compare_3b["Taxable Value_GSTR3B"]
+            )
+
+            compare_3b["IGST Difference"] = (
+                compare_3b["IGST_GSTR1"]
+                - compare_3b["IGST_GSTR3B"]
+            )
+
+            compare_3b["CGST Difference"] = (
+                compare_3b["CGST_GSTR1"]
+                - compare_3b["CGST_GSTR3B"]
+            )
+
+            compare_3b["SGST Difference"] = (
+                compare_3b["SGST_GSTR1"]
+                - compare_3b["SGST_GSTR3B"]
+            )
+
+            compare_3b.to_excel(
+                writer,
+                sheet_name="Monthly Summary",
+                startrow=row,
+                startcol=0,
+                index=False,
+            )
+
+        drill = workbook.add_worksheet("Difference Analysis")
+
+        mismatch_frames = []
+
+        if (
+            sales_reco_df is not None
+            and not sales_reco_df.empty
+        ):
+            mismatch_frames.append(
+                sales_reco_df[
+                    sales_reco_df["Status"] != "Matched"
+                ]
+            )
+
+        if (
+            gstr3b_reco_df is not None
+            and not gstr3b_reco_df.empty
+        ):
+            mismatch_frames.append(
+                gstr3b_reco_df[
+                    gstr3b_reco_df["Status"] != "Matched"
+                ]
+            )
+
+        if mismatch_frames:
+
+            drill_df = pd.concat(
+                mismatch_frames,
+                ignore_index=True,
+            )
+
+            drill_df.to_excel(
+                writer,
+                sheet_name="Difference Analysis",
+                index=False,
+            )
+
+        worksheet.freeze_panes(1, 0)
+        drill.freeze_panes(1, 0)
+
+    output.seek(0)
+
+    return output.getvalue()
