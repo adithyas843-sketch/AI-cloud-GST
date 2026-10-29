@@ -94,3 +94,59 @@ def reconcile(sources: dict[str, pd.DataFrame], tolerance: float = 1.0) -> pd.Da
         comparisons=[r for r in rows.values() if r is not None]
         diffs={c: max([r[c] for r in comparisons])-min([r[c] for r in comparisons]) for c in ["Taxable Value","IGST","CGST","SGST"]}
         for c, diff in diffs.items():
+            if abs(diff)>tolerance: reasons.append(f"{c} mismatch")
+        dates=[r["Invoice Date"] for r in comparisons if not pd.isna(r["Invoice Date"])]
+        if len(set(dates))>1: reasons.append("Invoice date mismatch")
+        status="Matched" if not reasons else "Mismatch"
+        records.append({"Document Type":base["Document Type"], "GSTIN":base["GSTIN"], "Invoice Number":base["Invoice Number"], "Invoice Date":base["Invoice Date"], "Customer":base["Customer"], "Status":status, "Mismatch Type":"; ".join(reasons) if reasons else "None", "Taxable Difference":diffs["Taxable Value"], "IGST Difference":diffs["IGST"], "CGST Difference":diffs["CGST"], "SGST Difference":diffs["SGST"], "Exposure Amount":abs(diffs["IGST"])+abs(diffs["CGST"])+abs(diffs["SGST"]), "Remarks":"Reconcile source documents and return filing." if reasons else "Reconciled successfully."})
+    result = pd.DataFrame(records)
+    return result.sort_values(["Status", "Exposure Amount"], ascending=[True, False]).reset_index(drop=True)
+
+def gstr3b_control(gstr1: pd.DataFrame, gstr3b: pd.DataFrame, tolerance: float = 1.0) -> pd.DataFrame:
+    """Compare GSTR-1 tax totals to the uploaded GSTR-3B summary (aggregate control)."""
+    if gstr1 is None or gstr1.empty or gstr3b is None or gstr3b.empty:
+        return pd.DataFrame(columns=["Tax Component", "GSTR-1", "GSTR-3B", "Difference", "Status"])
+    left, right = standardize_columns(gstr1), standardize_columns(gstr3b)
+    rows=[]
+    for col in ["IGST", "CGST", "SGST"]:
+        a, b = float(left[col].sum()), float(right[col].sum())
+        rows.append({"Tax Component":col,"GSTR-1":a,"GSTR-3B":b,"Difference":a-b,
+                     "Status":"Matched" if abs(a-b)<=tolerance else "Mismatch"})
+    return pd.DataFrame(rows)
+
+def gstr3b_reconciliation(gstr1: pd.DataFrame, gstr3b: pd.DataFrame, tolerance: float = 1.0) -> pd.DataFrame:
+    """Express the GSTR-1 versus GSTR-3B control in the common export schema."""
+    control = gstr3b_control(gstr1, gstr3b, tolerance)
+    rows = []
+    for _, item in control.iterrows():
+        component = item["Tax Component"]
+        difference = float(item["Difference"])
+        rows.append({
+            "Document Type": "Summary",
+            "GSTIN": "",
+            "Invoice Number": component,
+            "Invoice Date": pd.NaT,
+            "Customer": "GSTR-1 versus GSTR-3B",
+            "Status": item["Status"],
+            "Mismatch Type": "None" if item["Status"] == "Matched" else f"{component} mismatch",
+            "Taxable Difference": 0.0,
+            "IGST Difference": difference if component == "IGST" else 0.0,
+            "CGST Difference": difference if component == "CGST" else 0.0,
+            "SGST Difference": difference if component == "SGST" else 0.0,
+            "Exposure Amount": abs(difference),
+            "Remarks": "Aggregate tax control matched." if item["Status"] == "Matched" else "Review GSTR-1 totals against GSTR-3B filing totals.",
+        })
+    return pd.DataFrame(rows)
+
+def health_score(recon: pd.DataFrame, validations: pd.DataFrame) -> tuple[int, str]:
+    total=max(len(recon),1); mismatches=int((recon["Status"]=="Mismatch").sum()) if "Status" in recon else 0
+    issues = validations.get("Issue", pd.Series(dtype="object"))
+    invalid=int((issues=="Invalid GSTIN").sum())
+    dupes=int((issues=="Duplicate invoice").sum())
+    score=max(0, round(100 - 55*mismatches/total - 20*invalid/total - 15*dupes/total))
+    return score, f"{mismatches} reconciliation exceptions, {invalid} invalid GSTINs and {dupes} duplicate invoice flags influence the score."
+
+def summary(recon: pd.DataFrame, validations: pd.DataFrame) -> dict:
+    total=len(recon); matched=int((recon["Status"]=="Matched").sum()) if "Status" in recon else 0; score, why=health_score(recon,validations)
+    exposure=float(recon.get("Exposure Amount",pd.Series(dtype=float)).sum())
+    return {"total":total,"matched":matched,"mismatches":total-matched,"match_pct":round(100*matched/max(total,1),1),"exposure":exposure,"score":score,"score_reason":why,"risk":"High" if score<60 else "Medium" if score<85 else "Low"}
